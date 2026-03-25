@@ -45,6 +45,7 @@ class FakeValidationService:
         validator: str,
         notes: str = "",
         corrected_species: str | None = None,
+        expected_version: int | None = None,
     ) -> dict[str, str]:
         _ = corrected_species
         payload = {
@@ -53,9 +54,33 @@ class FakeValidationService:
             "status": status,
             "validator": validator,
             "notes": notes,
+            "expected_version": str(expected_version),
         }
         self.calls.append(payload)
         return payload
+
+
+class FakeConflictValidationService:
+    def validate_detection(
+        self,
+        project_slug: str,
+        detection_key: str,
+        status: str,
+        validator: str,
+        notes: str = "",
+        corrected_species: str | None = None,
+        expected_version: int | None = None,
+    ) -> dict[str, str]:
+        _ = project_slug
+        _ = detection_key
+        _ = status
+        _ = validator
+        _ = notes
+        _ = corrected_species
+        _ = expected_version
+        from src.repositories.append_only_validation_repository import OptimisticLockError
+
+        raise OptimisticLockError("dkey_01", expected_version or 0, 3)
 
 
 class FakeSnapshotReader:
@@ -64,6 +89,7 @@ class FakeSnapshotReader:
             "dkey_01": {
                 "status": "positive",
                 "validator": "validator-demo",
+                "version": 2,
             }
         }
         self.events: list[dict[str, object]] = [
@@ -168,7 +194,7 @@ def test_cleanup_selected_audio() -> None:
 def test_save_selected_validation_saves_and_cleans_audio_cache() -> None:
     audio_service = FakeAudioService()
     validation_service = FakeValidationService()
-    rows = [["0000000000001111", "audio_11", "sp", 0.9, 0.0, 1.0]]
+    rows = [["0000000000001111", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
 
     status, cache_key, audio_path = _save_selected_validation(
         validation_service=validation_service,
@@ -187,7 +213,30 @@ def test_save_selected_validation_saves_and_cleans_audio_cache() -> None:
     assert audio_path is None
     assert len(validation_service.calls) == 1
     assert validation_service.calls[0]["detection_key"] == "0000000000001111"
+    assert validation_service.calls[0]["expected_version"] == "0"
     assert audio_service.cleaned == ["cache:audio_11"]
+
+
+def test_save_selected_validation_returns_conflict_message() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeConflictValidationService()
+    rows = [["0000000000001111", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
+
+    status, cache_key, audio_path = _save_selected_validation(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        status_value="positive",
+        validator="validator-demo",
+        notes="ok",
+        cache_key="cache:audio_11",
+    )
+
+    assert "Conflito de concorrencia" in status
+    assert cache_key == "cache:audio_11"
+    assert audio_path is None
 
 
 def test_build_validation_report() -> None:
@@ -213,3 +262,4 @@ def test_page_to_table_includes_validation_status() -> None:
     assert "Pagina 1/1" in status
     assert rows[0][0] == "dkey_01"
     assert rows[0][6] == "positive"
+    assert rows[0][7] == 2

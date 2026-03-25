@@ -54,3 +54,4 @@ Estrutura base criada por projeto/dataset:
 - Sprint 2 (UI fluxo): botoes de validacao rapida com salvamento em memoria e limpeza automatica do cache de audio
 - Sprint 3 (inicial): persistencia append-only de validacoes em eventos JSONL + snapshot current por detection_key
 - Sprint 3 (UI): tabela exibe status atual da validacao por detection_key e botao de relatorio por projeto
+- Sprint 3 (concorrencia): controle otimista por versao esperada com deteccao de conflito e bloqueio de sobrescrita silenciosa
