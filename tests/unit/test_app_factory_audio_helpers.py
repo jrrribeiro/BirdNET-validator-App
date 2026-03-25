@@ -13,6 +13,7 @@ from src.ui.app_factory import (
     _page_to_table,
     _save_selected_validation,
     _save_selected_validation_with_refresh,
+    _reapply_last_conflict_validation_with_refresh,
 )
 
 
@@ -265,6 +266,21 @@ def test_page_to_table_includes_validation_status() -> None:
     assert rows[0][0] == "dkey_01"
     assert rows[0][6] == "positive"
     assert rows[0][7] == 2
+    assert rows[0][8] == ""
+
+
+def test_page_to_table_marks_conflict_row() -> None:
+    rows, _, _ = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+        conflict_detection_key="dkey_01",
+    )
+
+    assert rows[0][8] == "conflict"
 
 
 def test_find_detection_row_index() -> None:
@@ -279,7 +295,7 @@ def test_save_selected_validation_with_refresh_success() -> None:
     validation_service = FakeValidationService()
     rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
 
-    status, cache_key, audio_path, refreshed_rows, refreshed_page, refreshed_index = _save_selected_validation_with_refresh(
+    status, cache_key, audio_path, refreshed_rows, refreshed_page, refreshed_index, pending_status, conflict_key = _save_selected_validation_with_refresh(
         validation_service=validation_service,
         audio_service=audio_service,
         queue_service=FakeQueueService(),
@@ -302,6 +318,8 @@ def test_save_selected_validation_with_refresh_success() -> None:
     assert refreshed_page == 1
     assert refreshed_index == 0
     assert refreshed_rows[0][0] == "dkey_01"
+    assert pending_status == ""
+    assert conflict_key == ""
 
 
 def test_save_selected_validation_with_refresh_conflict() -> None:
@@ -309,7 +327,7 @@ def test_save_selected_validation_with_refresh_conflict() -> None:
     validation_service = FakeConflictValidationService()
     rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
 
-    status, cache_key, audio_path, refreshed_rows, refreshed_page, refreshed_index = _save_selected_validation_with_refresh(
+    status, cache_key, audio_path, refreshed_rows, refreshed_page, refreshed_index, pending_status, conflict_key = _save_selected_validation_with_refresh(
         validation_service=validation_service,
         audio_service=audio_service,
         queue_service=FakeQueueService(),
@@ -333,3 +351,67 @@ def test_save_selected_validation_with_refresh_conflict() -> None:
     assert refreshed_page == 1
     assert refreshed_index == 0
     assert refreshed_rows[0][0] == "dkey_01"
+    assert refreshed_rows[0][8] == "conflict"
+    assert pending_status == "positive"
+    assert conflict_key == "dkey_01"
+
+
+def test_reapply_last_conflict_validation_with_refresh() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 2, "conflict"]]
+
+    status, cache_key, audio_path, refreshed_rows, refreshed_page, refreshed_index, pending_status, conflict_key = _reapply_last_conflict_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        pending_status_value="positive",
+        conflict_detection_key="dkey_01",
+        validator="validator-demo",
+        notes="retry",
+        cache_key="",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+    )
+
+    assert "Validacao salva" in status
+    assert cache_key == ""
+    assert audio_path is None
+    assert refreshed_page == 1
+    assert refreshed_index == 0
+    assert refreshed_rows[0][0] == "dkey_01"
+    assert pending_status == ""
+    assert conflict_key == ""
+
+
+def test_reapply_last_conflict_without_pending_status() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 2, ""]]
+
+    status, _, _, _, _, _, pending_status, conflict_key = _reapply_last_conflict_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        pending_status_value="",
+        conflict_detection_key="",
+        validator="validator-demo",
+        notes="retry",
+        cache_key="",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+    )
+
+    assert "Nenhuma validacao pendente" in status
+    assert pending_status == ""
+    assert conflict_key == ""
