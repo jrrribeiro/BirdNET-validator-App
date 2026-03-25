@@ -1,10 +1,12 @@
 import gradio as gr
+import tempfile
+from pathlib import Path
 from typing import Protocol
 
 from src.cache.ephemeral_cache_manager import EphemeralCacheManager
 from src.domain.models import Detection
+from src.repositories.append_only_validation_repository import AppendOnlyValidationRepository
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
-from src.repositories.in_memory_validation_repository import InMemoryValidationRepository
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
 from src.services.validation_service import ValidationService
@@ -203,7 +205,8 @@ def _save_selected_validation(
 def create_app() -> gr.Blocks:
     service = _seed_service()
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
-    validation_service = ValidationService(InMemoryValidationRepository())
+    validation_base_dir = str(Path(tempfile.gettempdir()) / "birdnet-validator-validations")
+    validation_service = ValidationService(AppendOnlyValidationRepository(base_dir=validation_base_dir))
 
     with gr.Blocks(title="BirdNET Validator HF") as demo:
         gr.Markdown("# BirdNET Validator HF")
