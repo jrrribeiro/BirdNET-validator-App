@@ -125,7 +125,8 @@ def _page_to_table(
             item.end_time,
             str(snapshot.get(item.detection_key, {}).get("status", "pending")),
             int(snapshot.get(item.detection_key, {}).get("version", 0)),
-            "conflict" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
+            "CONFLICT" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
+            "HIGH" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
         ]
         for item in page_obj.items
     ]
@@ -288,7 +289,8 @@ def _save_selected_validation(
     except OptimisticLockError as exc:
         return (
             "Conflito de concorrencia: esta deteccao foi atualizada por outro validador "
-            f"(versao atual={exc.current_version}, esperada={exc.expected_version}). Recarregue a tabela.",
+            f"(detection_key={exc.detection_key}, versao atual={exc.current_version}, esperada={exc.expected_version}). "
+            "Recarregue a tabela.",
             cache_key,
             None,
         )
@@ -466,6 +468,7 @@ def create_app() -> gr.Blocks:
                 "validation_status",
                 "version",
                 "conflict_flag",
+                "conflict_severity",
             ],
             label="Deteccoes",
             interactive=False,
