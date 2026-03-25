@@ -4,8 +4,10 @@ from typing import Protocol
 from src.cache.ephemeral_cache_manager import EphemeralCacheManager
 from src.domain.models import Detection
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
+from src.repositories.in_memory_validation_repository import InMemoryValidationRepository
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
+from src.services.validation_service import ValidationService
 
 
 class _AudioFetchResultProtocol(Protocol):
@@ -18,6 +20,18 @@ class _AudioServiceProtocol(Protocol):
     def fetch(self, dataset_repo: str, audio_id: str) -> _AudioFetchResultProtocol: ...
 
     def cleanup_after_validation(self, cache_key: str) -> None: ...
+
+
+class _ValidationServiceProtocol(Protocol):
+    def validate_detection(
+        self,
+        project_slug: str,
+        detection_key: str,
+        status: str,
+        validator: str,
+        notes: str = "",
+        corrected_species: str | None = None,
+    ) -> object: ...
 
 
 def _seed_service() -> DetectionQueueService:
@@ -105,6 +119,26 @@ def _extract_audio_id(rows: object, selected_index: int) -> str:
     return audio_id
 
 
+def _extract_detection_key(rows: object, selected_index: int) -> str:
+    normalized_rows: list[list[object]]
+
+    if hasattr(rows, "values"):
+        normalized_rows = [list(item) for item in rows.values.tolist()]
+    else:
+        normalized_rows = [list(item) for item in rows] if rows else []
+
+    if not normalized_rows:
+        raise ValueError("Nenhuma deteccao carregada na tabela")
+    if selected_index < 0 or selected_index >= len(normalized_rows):
+        raise ValueError("Selecione uma deteccao valida na tabela")
+
+    value = normalized_rows[selected_index][0]
+    detection_key = str(value).strip()
+    if not detection_key:
+        raise ValueError("detection_key invalido na deteccao selecionada")
+    return detection_key
+
+
 def _fetch_selected_audio(
     audio_service: _AudioServiceProtocol,
     dataset_repo: str,
@@ -135,9 +169,41 @@ def _cleanup_selected_audio(audio_service: _AudioServiceProtocol, cache_key: str
     return "Cache de audio limpo apos validacao", None
 
 
+def _save_selected_validation(
+    validation_service: _ValidationServiceProtocol,
+    audio_service: _AudioServiceProtocol,
+    project_slug: str,
+    rows: object,
+    selected_index: int,
+    status_value: str,
+    validator: str,
+    notes: str,
+    cache_key: str,
+) -> tuple[str, str, str | None]:
+    validator_name = validator.strip()
+    if not validator_name:
+        return "Informe o nome do validador", cache_key, None
+
+    try:
+        detection_key = _extract_detection_key(rows=rows, selected_index=selected_index)
+        _ = validation_service.validate_detection(
+            project_slug=project_slug,
+            detection_key=detection_key,
+            status=status_value,
+            validator=validator_name,
+            notes=notes.strip(),
+        )
+        if cache_key:
+            audio_service.cleanup_after_validation(cache_key=cache_key)
+        return f"Validacao salva: {detection_key} -> {status_value}", "", None
+    except Exception as exc:
+        return f"Falha ao salvar validacao: {exc}", cache_key, None
+
+
 def create_app() -> gr.Blocks:
     service = _seed_service()
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
+    validation_service = ValidationService(InMemoryValidationRepository())
 
     with gr.Blocks(title="BirdNET Validator HF") as demo:
         gr.Markdown("# BirdNET Validator HF")
@@ -165,6 +231,16 @@ def create_app() -> gr.Blocks:
         with gr.Row():
             load_audio_btn = gr.Button("Carregar audio selecionado")
             clear_audio_btn = gr.Button("Limpar cache apos validacao")
+
+        with gr.Row():
+            validator_name = gr.Textbox(label="Validador", value="validator-demo")
+            validation_notes = gr.Textbox(label="Notas", placeholder="Opcional")
+
+        with gr.Row():
+            approve_btn = gr.Button("Validar positivo")
+            reject_btn = gr.Button("Validar negativo")
+            uncertain_btn = gr.Button("Indeterminado")
+            skip_btn = gr.Button("Pular")
 
         audio_player = gr.Audio(label="Audio sob demanda", type="filepath")
         cache_key_state = gr.State(value="")
@@ -222,6 +298,66 @@ def create_app() -> gr.Blocks:
             fn=lambda cache_key: _cleanup_selected_audio(audio_service=audio_service, cache_key=cache_key),
             inputs=[cache_key_state],
             outputs=[status, audio_player],
+        )
+        approve_btn.click(
+            fn=lambda rows, idx, name, notes, cache_key: _save_selected_validation(
+                validation_service=validation_service,
+                audio_service=audio_service,
+                project_slug="demo-project",
+                rows=rows,
+                selected_index=int(idx),
+                status_value="positive",
+                validator=name,
+                notes=notes,
+                cache_key=cache_key,
+            ),
+            inputs=[table, selected_index, validator_name, validation_notes, cache_key_state],
+            outputs=[status, cache_key_state, audio_player],
+        )
+        reject_btn.click(
+            fn=lambda rows, idx, name, notes, cache_key: _save_selected_validation(
+                validation_service=validation_service,
+                audio_service=audio_service,
+                project_slug="demo-project",
+                rows=rows,
+                selected_index=int(idx),
+                status_value="negative",
+                validator=name,
+                notes=notes,
+                cache_key=cache_key,
+            ),
+            inputs=[table, selected_index, validator_name, validation_notes, cache_key_state],
+            outputs=[status, cache_key_state, audio_player],
+        )
+        uncertain_btn.click(
+            fn=lambda rows, idx, name, notes, cache_key: _save_selected_validation(
+                validation_service=validation_service,
+                audio_service=audio_service,
+                project_slug="demo-project",
+                rows=rows,
+                selected_index=int(idx),
+                status_value="uncertain",
+                validator=name,
+                notes=notes,
+                cache_key=cache_key,
+            ),
+            inputs=[table, selected_index, validator_name, validation_notes, cache_key_state],
+            outputs=[status, cache_key_state, audio_player],
+        )
+        skip_btn.click(
+            fn=lambda rows, idx, name, notes, cache_key: _save_selected_validation(
+                validation_service=validation_service,
+                audio_service=audio_service,
+                project_slug="demo-project",
+                rows=rows,
+                selected_index=int(idx),
+                status_value="skip",
+                validator=name,
+                notes=notes,
+                cache_key=cache_key,
+            ),
+            inputs=[table, selected_index, validator_name, validation_notes, cache_key_state],
+            outputs=[status, cache_key_state, audio_player],
         )
 
     return demo

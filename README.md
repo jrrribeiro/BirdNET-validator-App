@@ -51,3 +51,4 @@ Estrutura base criada por projeto/dataset:
 - Sprint 2 (inicial): fila paginada de deteccoes com filtros basicos em demo local Gradio
 - Sprint 2 (backend): AudioFetchService com download sob demanda por audio_id + cache efemero com cleanup pos-validacao
 - Sprint 2 (UI): carregar audio da deteccao selecionada e limpar cache apos validacao
+- Sprint 2 (UI fluxo): botoes de validacao rapida com salvamento em memoria e limpeza automatica do cache de audio
