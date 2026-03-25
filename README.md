@@ -45,3 +45,7 @@ Estrutura base criada por projeto/dataset:
 - src/cache: cache efemero local
 - cli: comandos de ingestao/publicacao
 - tests: testes unitarios e integracao
+
+## Estado atual de implementacao
+- Sprint 1: CLI create-project, sync-audio, build-index, verify-project
+- Sprint 2 (inicial): fila paginada de deteccoes com filtros basicos em demo local Gradio
