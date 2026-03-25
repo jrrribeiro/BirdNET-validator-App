@@ -8,9 +8,11 @@ from src.ui.app_factory import (
     _cleanup_selected_audio,
     _extract_audio_id,
     _extract_detection_key,
+    _find_detection_row_index,
     _fetch_selected_audio,
     _page_to_table,
     _save_selected_validation,
+    _save_selected_validation_with_refresh,
 )
 
 
@@ -263,3 +265,71 @@ def test_page_to_table_includes_validation_status() -> None:
     assert rows[0][0] == "dkey_01"
     assert rows[0][6] == "positive"
     assert rows[0][7] == 2
+
+
+def test_find_detection_row_index() -> None:
+    rows = [["dkey_00", "audio_00"], ["dkey_01", "audio_01"]]
+
+    assert _find_detection_row_index(rows, "dkey_01") == 1
+    assert _find_detection_row_index(rows, "missing") == 0
+
+
+def test_save_selected_validation_with_refresh_success() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
+
+    status, cache_key, audio_path, refreshed_rows, refreshed_page, refreshed_index = _save_selected_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        status_value="positive",
+        validator="validator-demo",
+        notes="ok",
+        cache_key="cache:audio_11",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+    )
+
+    assert "Validacao salva" in status
+    assert cache_key == ""
+    assert audio_path is None
+    assert refreshed_page == 1
+    assert refreshed_index == 0
+    assert refreshed_rows[0][0] == "dkey_01"
+
+
+def test_save_selected_validation_with_refresh_conflict() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeConflictValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
+
+    status, cache_key, audio_path, refreshed_rows, refreshed_page, refreshed_index = _save_selected_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        status_value="positive",
+        validator="validator-demo",
+        notes="ok",
+        cache_key="cache:audio_11",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+    )
+
+    assert "Conflito de concorrencia" in status
+    assert "Tabela recarregada" in status
+    assert cache_key == "cache:audio_11"
+    assert audio_path is None
+    assert refreshed_page == 1
+    assert refreshed_index == 0
+    assert refreshed_rows[0][0] == "dkey_01"
