@@ -446,6 +446,145 @@ def _reapply_last_conflict_validation_with_refresh(
     )
 
 
+def _batch_validate_conflicts(
+    validation_service: _ValidationServiceProtocol,
+    audio_service: _AudioServiceProtocol,
+    queue_service: _QueueServiceProtocol,
+    snapshot_reader: _ValidationReadRepositoryProtocol,
+    project_slug: str,
+    rows: object,
+    status_value: str,
+    validator: str,
+    notes: str,
+    cache_key: str,
+    page: int,
+    scientific_name: str,
+    min_confidence: float,
+) -> tuple[str, str, str | None, list[list[object]], int]:
+    """Apply the same validation status to all visible conflicts in the table."""
+    validator_name = validator.strip()
+    if not validator_name:
+        return "Informe o nome do validador", "", None, [], page
+
+    normalized_rows: list[list[object]]
+    if hasattr(rows, "values"):
+        normalized_rows = [list(item) for item in rows.values.tolist()]
+    else:
+        normalized_rows = [list(item) for item in rows] if rows else []
+
+    if not normalized_rows:
+        return "Nenhuma deteccao com conflito para validar", "", None, [], page
+
+    conflict_rows = [row for row in normalized_rows if str(row[8]) == "CONFLICT"]
+    if not conflict_rows:
+        return "Nenhuma deteccao com conflito identificada na tabela", "", None, normalized_rows, page
+
+    success_count = 0
+    failure_count = 0
+    conflict_count = 0
+
+    for row in conflict_rows:
+        try:
+            detection_key = str(row[0]).strip()
+            expected_version = int(row[7])
+
+            _ = validation_service.validate_detection(
+                project_slug=project_slug,
+                detection_key=detection_key,
+                status=status_value,
+                validator=validator_name,
+                notes=notes.strip(),
+                expected_version=expected_version,
+            )
+            success_count += 1
+            if cache_key:
+                audio_service.cleanup_after_validation(cache_key=cache_key)
+        except OptimisticLockError:
+            conflict_count += 1
+        except Exception:
+            failure_count += 1
+
+    refreshed_rows, page_status, refreshed_page = _page_to_table(
+        service=queue_service,
+        snapshot_reader=snapshot_reader,
+        project_slug=project_slug,
+        page=page,
+        scientific_name=scientific_name,
+        min_confidence=min_confidence,
+        show_conflicts_only=False,
+    )
+
+    summary = f"Processados {len(conflict_rows)} conflitos: {success_count} sucesso, {conflict_count} novos conflitos, {failure_count} falhas"
+    status = f"{summary} | {page_status}"
+
+    return status, "", None, refreshed_rows, refreshed_page
+
+
+def _batch_reapply_all_pending(
+    validation_service: _ValidationServiceProtocol,
+    audio_service: _AudioServiceProtocol,
+    queue_service: _QueueServiceProtocol,
+    snapshot_reader: _ValidationReadRepositoryProtocol,
+    project_slug: str,
+    rows: object,
+    pending_statuses: dict[str, str],
+    validator: str,
+    notes: str,
+    cache_key: str,
+    page: int,
+    scientific_name: str,
+    min_confidence: float,
+) -> tuple[str, str, str | None, list[list[object]], int]:
+    """Reapply all pending validations (stored conflicts) with current version."""
+    if not pending_statuses:
+        return "Nenhuma validacao pendente para reaplicar", "", None, [], page
+
+    validator_name = validator.strip()
+    if not validator_name:
+        return "Informe o nome do validador", "", None, [], page
+
+    success_count = 0
+    conflict_count = 0
+    failure_count = 0
+
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
+
+    for detection_key, status_value in pending_statuses.items():
+        try:
+            current_version = int(snapshot.get(detection_key, {}).get("version", 0))
+
+            _ = validation_service.validate_detection(
+                project_slug=project_slug,
+                detection_key=detection_key,
+                status=status_value,
+                validator=validator_name,
+                notes=notes.strip(),
+                expected_version=current_version,
+            )
+            success_count += 1
+            if cache_key:
+                audio_service.cleanup_after_validation(cache_key=cache_key)
+        except OptimisticLockError:
+            conflict_count += 1
+        except Exception:
+            failure_count += 1
+
+    refreshed_rows, page_status, refreshed_page = _page_to_table(
+        service=queue_service,
+        snapshot_reader=snapshot_reader,
+        project_slug=project_slug,
+        page=page,
+        scientific_name=scientific_name,
+        min_confidence=min_confidence,
+        show_conflicts_only=False,
+    )
+
+    summary = f"Reaplicadas {len(pending_statuses)} validacoes: {success_count} sucesso, {conflict_count} novos conflitos, {failure_count} falhas"
+    status = f"{summary} | {page_status}"
+
+    return status, "", None, refreshed_rows, refreshed_page
+
+
 def create_app() -> gr.Blocks:
     project_slug = "demo-project"
     service = _seed_service()
@@ -503,6 +642,10 @@ def create_app() -> gr.Blocks:
             uncertain_btn = gr.Button("Indeterminado")
             skip_btn = gr.Button("Pular")
             reapply_btn = gr.Button("Reaplicar validacao apos conflito")
+
+        with gr.Row():
+            batch_approve_conflicts_btn = gr.Button("Aprovar todos os conflitos")
+            batch_reject_conflicts_btn = gr.Button("Rejeitar todos os conflitos")
 
         report_btn = gr.Button("Gerar relatorio de validacoes")
 
@@ -720,6 +863,44 @@ def create_app() -> gr.Blocks:
                 show_conflicts_only,
             ],
             outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+        )
+        batch_approve_conflicts_btn.click(
+            fn=lambda rows, name, notes, cache_key, page, species, confidence: _batch_validate_conflicts(
+                validation_service=validation_service,
+                audio_service=audio_service,
+                queue_service=service,
+                snapshot_reader=validation_repository,
+                project_slug=project_slug,
+                rows=rows,
+                status_value="positive",
+                validator=name,
+                notes=notes,
+                cache_key=cache_key,
+                page=int(page),
+                scientific_name=species,
+                min_confidence=float(confidence),
+            ),
+            inputs=[table, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence],
+            outputs=[status, cache_key_state, audio_player, table, page_state],
+        )
+        batch_reject_conflicts_btn.click(
+            fn=lambda rows, name, notes, cache_key, page, species, confidence: _batch_validate_conflicts(
+                validation_service=validation_service,
+                audio_service=audio_service,
+                queue_service=service,
+                snapshot_reader=validation_repository,
+                project_slug=project_slug,
+                rows=rows,
+                status_value="negative",
+                validator=name,
+                notes=notes,
+                cache_key=cache_key,
+                page=int(page),
+                scientific_name=species,
+                min_confidence=float(confidence),
+            ),
+            inputs=[table, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence],
+            outputs=[status, cache_key_state, audio_player, table, page_state],
         )
         report_btn.click(
             fn=lambda: _build_validation_report(validation_repository, project_slug),

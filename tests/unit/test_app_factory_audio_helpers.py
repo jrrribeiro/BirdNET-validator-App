@@ -14,6 +14,7 @@ from src.ui.app_factory import (
     _save_selected_validation,
     _save_selected_validation_with_refresh,
     _reapply_last_conflict_validation_with_refresh,
+    _batch_validate_conflicts,
     create_app,
 )
 
@@ -464,3 +465,63 @@ def test_create_app_with_keyboard_shortcuts() -> None:
     # Verify the app is a Gradio Blocks instance
     assert hasattr(app, "queue")
     assert hasattr(app, "launch")
+
+
+def test_batch_validate_conflicts_all_success() -> None:
+    """Test batch approval of all conflicts in table."""
+    audio_service = FakeAudioService()
+    validation_service = FakeValidationService()
+    rows = [
+        ["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 1, "CONFLICT", "HIGH"],
+        ["dkey_02", "audio_12", "sp", 0.85, 1.0, 2.0, "pending", 1, "CONFLICT", "HIGH"],
+    ]
+
+    status, cache_key, audio_path, refreshed_rows, refreshed_page = _batch_validate_conflicts(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        status_value="positive",
+        validator="validator-demo",
+        notes="batch approval",
+        cache_key="",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+    )
+
+    assert "Processados 2 conflitos" in status
+    assert "2 sucesso" in status
+    assert cache_key == ""
+    assert refreshed_page == 1
+    assert len(validation_service.calls) == 2
+
+
+def test_batch_validate_conflicts_no_conflicts() -> None:
+    """Test batch validation when no conflicts are present."""
+    audio_service = FakeAudioService()
+    validation_service = FakeValidationService()
+    rows = [
+        ["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "positive", 2, "", ""],
+    ]
+
+    status, cache_key, audio_path, refreshed_rows, refreshed_page = _batch_validate_conflicts(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        status_value="positive",
+        validator="validator-demo",
+        notes="batch approval",
+        cache_key="",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+    )
+
+    assert "Nenhuma deteccao com conflito" in status
+    assert len(validation_service.calls) == 0
