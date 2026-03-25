@@ -1,5 +1,13 @@
+from dataclasses import dataclass
+
 from src.domain.models import Validation
 from src.repositories.contracts import ValidationRepository
+
+
+@dataclass(slots=True)
+class ValidationWriteResult:
+    item: Validation
+    new_version: int
 
 
 class ValidationService:
@@ -14,7 +22,8 @@ class ValidationService:
         validator: str,
         notes: str = "",
         corrected_species: str | None = None,
-    ) -> Validation:
+        expected_version: int | None = None,
+    ) -> ValidationWriteResult:
         item = Validation(
             detection_key=detection_key,
             status=status,
@@ -22,5 +31,9 @@ class ValidationService:
             notes=notes,
             validator=validator,
         )
-        self._repository.save_validation(project_slug=project_slug, item=item)
-        return item
+        new_version = self._repository.save_validation(
+            project_slug=project_slug,
+            item=item,
+            expected_version=expected_version,
+        )
+        return ValidationWriteResult(item=item, new_version=new_version)

@@ -28,7 +28,7 @@ class DetectionRepository(Protocol):
 
 
 class ValidationRepository(Protocol):
-    def save_validation(self, project_slug: str, item: Validation) -> None: ...
+    def save_validation(self, project_slug: str, item: Validation, expected_version: int | None = None) -> int: ...
 
 
 class AuthRepository(Protocol):

@@ -5,7 +5,7 @@ from typing import Protocol
 
 from src.cache.ephemeral_cache_manager import EphemeralCacheManager
 from src.domain.models import Detection
-from src.repositories.append_only_validation_repository import AppendOnlyValidationRepository
+from src.repositories.append_only_validation_repository import AppendOnlyValidationRepository, OptimisticLockError
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
@@ -33,6 +33,7 @@ class _ValidationServiceProtocol(Protocol):
         validator: str,
         notes: str = "",
         corrected_species: str | None = None,
+        expected_version: int | None = None,
     ) -> object: ...
 
 
@@ -122,6 +123,7 @@ def _page_to_table(
             item.start_time,
             item.end_time,
             str(snapshot.get(item.detection_key, {}).get("status", "pending")),
+            int(snapshot.get(item.detection_key, {}).get("version", 0)),
         ]
         for item in page_obj.items
     ]
@@ -191,6 +193,23 @@ def _extract_detection_key(rows: object, selected_index: int) -> str:
     return detection_key
 
 
+def _extract_expected_version(rows: object, selected_index: int) -> int:
+    normalized_rows: list[list[object]]
+
+    if hasattr(rows, "values"):
+        normalized_rows = [list(item) for item in rows.values.tolist()]
+    else:
+        normalized_rows = [list(item) for item in rows] if rows else []
+
+    if not normalized_rows:
+        raise ValueError("Nenhuma deteccao carregada na tabela")
+    if selected_index < 0 or selected_index >= len(normalized_rows):
+        raise ValueError("Selecione uma deteccao valida na tabela")
+
+    value = normalized_rows[selected_index][7]
+    return int(value)
+
+
 def _fetch_selected_audio(
     audio_service: _AudioServiceProtocol,
     dataset_repo: str,
@@ -238,16 +257,25 @@ def _save_selected_validation(
 
     try:
         detection_key = _extract_detection_key(rows=rows, selected_index=selected_index)
+        expected_version = _extract_expected_version(rows=rows, selected_index=selected_index)
         _ = validation_service.validate_detection(
             project_slug=project_slug,
             detection_key=detection_key,
             status=status_value,
             validator=validator_name,
             notes=notes.strip(),
+            expected_version=expected_version,
         )
         if cache_key:
             audio_service.cleanup_after_validation(cache_key=cache_key)
         return f"Validacao salva: {detection_key} -> {status_value}", "", None
+    except OptimisticLockError as exc:
+        return (
+            "Conflito de concorrencia: esta deteccao foi atualizada por outro validador "
+            f"(versao atual={exc.current_version}, esperada={exc.expected_version}). Recarregue a tabela.",
+            cache_key,
+            None,
+        )
     except Exception as exc:
         return f"Falha ao salvar validacao: {exc}", cache_key, None
 
@@ -285,6 +313,7 @@ def create_app() -> gr.Blocks:
                 "start_time",
                 "end_time",
                 "validation_status",
+                "version",
             ],
             label="Deteccoes",
             interactive=False,
