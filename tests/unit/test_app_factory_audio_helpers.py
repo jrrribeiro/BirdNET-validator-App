@@ -285,6 +285,38 @@ def test_page_to_table_marks_conflict_row() -> None:
     assert rows[0][9] == "HIGH"
 
 
+def test_page_to_table_conflicts_only_filter_hides_non_conflicts() -> None:
+    rows, status, _ = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+        show_conflicts_only=True,
+    )
+
+    assert rows == []
+    assert "Apenas conflitos: 0 item(ns)" in status
+
+
+def test_page_to_table_conflicts_only_filter_keeps_conflict_rows() -> None:
+    rows, status, _ = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+        conflict_detection_key="dkey_01",
+        show_conflicts_only=True,
+    )
+
+    assert len(rows) == 1
+    assert rows[0][8] == "CONFLICT"
+    assert "Apenas conflitos: 1 item(ns)" in status
+
+
 def test_find_detection_row_index() -> None:
     rows = [["dkey_00", "audio_00"], ["dkey_01", "audio_01"]]
 
@@ -312,6 +344,7 @@ def test_save_selected_validation_with_refresh_success() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        show_conflicts_only=False,
     )
 
     assert "Validacao salva" in status
@@ -344,6 +377,7 @@ def test_save_selected_validation_with_refresh_conflict() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        show_conflicts_only=False,
     )
 
     assert "Conflito de concorrencia" in status
@@ -380,6 +414,7 @@ def test_reapply_last_conflict_validation_with_refresh() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        show_conflicts_only=False,
     )
 
     assert "Validacao salva" in status
@@ -413,6 +448,7 @@ def test_reapply_last_conflict_without_pending_status() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        show_conflicts_only=False,
     )
 
     assert "Nenhuma validacao pendente" in status
