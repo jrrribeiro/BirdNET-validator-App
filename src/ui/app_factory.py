@@ -834,7 +834,7 @@ def create_app() -> gr.Blocks:
                 only_conflicts,
             )
 
-        def on_select(evt):
+        def on_select(evt: gr.SelectData):
             if isinstance(evt.index, tuple):
                 return int(evt.index[0])
             if isinstance(evt.index, int):
