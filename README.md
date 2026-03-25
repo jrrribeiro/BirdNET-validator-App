@@ -52,3 +52,4 @@ Estrutura base criada por projeto/dataset:
 - Sprint 2 (backend): AudioFetchService com download sob demanda por audio_id + cache efemero com cleanup pos-validacao
 - Sprint 2 (UI): carregar audio da deteccao selecionada e limpar cache apos validacao
 - Sprint 2 (UI fluxo): botoes de validacao rapida com salvamento em memoria e limpeza automatica do cache de audio
+- Sprint 3 (inicial): persistencia append-only de validacoes em eventos JSONL + snapshot current por detection_key
