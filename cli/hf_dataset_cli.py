@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from io import BytesIO
@@ -36,6 +37,7 @@ REQUIRED_DETECTIONS_COLUMNS = (
     "start_time",
     "end_time",
 )
+SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 
 
 @dataclass(slots=True)
@@ -203,6 +205,164 @@ def build_manifest_payload(
     }
 
 
+def discover_audio_files(local_audio_dir: str) -> list[Path]:
+    audio_root = Path(local_audio_dir)
+    if not audio_root.exists() or not audio_root.is_dir():
+        raise FileNotFoundError(f"Audio directory not found: {local_audio_dir}")
+
+    files = [
+        path
+        for path in audio_root.rglob("*")
+        if path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
+    ]
+    return sorted(files)
+
+
+def _chunk_items(items: list[Path], chunk_size: int) -> list[list[Path]]:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
+    return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+
+def _load_resume_state(state_file: Path) -> dict[str, Any]:
+    if not state_file.exists():
+        return {"uploaded": [], "failed": []}
+
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    uploaded = payload.get("uploaded", [])
+    failed = payload.get("failed", [])
+    return {
+        "uploaded": uploaded if isinstance(uploaded, list) else [],
+        "failed": failed if isinstance(failed, list) else [],
+    }
+
+
+def _save_resume_state(state_file: Path, uploaded: set[str], failed: set[str]) -> None:
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "updated_at": _utcnow_iso(),
+        "uploaded": sorted(uploaded),
+        "failed": sorted(failed),
+    }
+    state_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _upload_audio_with_retry(
+    api: HfApi,
+    dataset_repo: str,
+    local_path: Path,
+    path_in_repo: str,
+    max_retries: int,
+    retry_backoff_seconds: float,
+) -> None:
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            api.upload_file(
+                path_or_fileobj=str(local_path),
+                path_in_repo=path_in_repo,
+                repo_id=dataset_repo,
+                repo_type="dataset",
+            )
+            return
+        except Exception:
+            if attempts > max_retries:
+                raise
+            time.sleep(retry_backoff_seconds * attempts)
+
+
+def sync_audio_batches(
+    api: HfApi,
+    project_slug: str,
+    dataset_repo: str,
+    local_audio_dir: str,
+    batch_size: int,
+    max_retries: int,
+    retry_backoff_seconds: float,
+    resume_state_file: str,
+) -> dict[str, Any]:
+    ensure_project_dataset_structure(
+        api=api,
+        project_slug=project_slug,
+        dataset_repo=dataset_repo,
+        create_private_repo=False,
+    )
+
+    all_files = discover_audio_files(local_audio_dir=local_audio_dir)
+    state_path = Path(resume_state_file)
+    state_payload = _load_resume_state(state_file=state_path)
+    uploaded_state = set(str(item) for item in state_payload["uploaded"])
+
+    remote_files = set(api.list_repo_files(repo_id=dataset_repo, repo_type="dataset"))
+
+    pending: list[tuple[Path, str]] = []
+    for path in all_files:
+        rel = path.relative_to(Path(local_audio_dir)).as_posix()
+        repo_path = f"audio/{rel}"
+
+        if repo_path in remote_files:
+            uploaded_state.add(repo_path)
+            continue
+
+        if repo_path in uploaded_state:
+            continue
+
+        pending.append((path, repo_path))
+
+    pending_paths = [item[0] for item in pending]
+    by_local_to_repo = {local: repo for local, repo in pending}
+    batches = _chunk_items(pending_paths, batch_size) if pending_paths else []
+
+    uploaded_now: set[str] = set()
+    failed: set[str] = set()
+
+    for batch_index, batch in enumerate(batches, start=1):
+        batch_uploaded = 0
+        batch_failed = 0
+
+        for local_path in batch:
+            repo_path = by_local_to_repo[local_path]
+            try:
+                _upload_audio_with_retry(
+                    api=api,
+                    dataset_repo=dataset_repo,
+                    local_path=local_path,
+                    path_in_repo=repo_path,
+                    max_retries=max_retries,
+                    retry_backoff_seconds=retry_backoff_seconds,
+                )
+                uploaded_now.add(repo_path)
+                uploaded_state.add(repo_path)
+                batch_uploaded += 1
+            except Exception:
+                failed.add(repo_path)
+                batch_failed += 1
+
+        print(
+            json.dumps(
+                {
+                    "event": "sync-audio-batch",
+                    "batch_index": batch_index,
+                    "batch_size": len(batch),
+                    "uploaded": batch_uploaded,
+                    "failed": batch_failed,
+                }
+            )
+        )
+        _save_resume_state(state_file=state_path, uploaded=uploaded_state, failed=failed)
+
+    return {
+        "project_slug": project_slug,
+        "dataset_repo": dataset_repo,
+        "total_local_audio_files": len(all_files),
+        "pending_uploads": len(pending),
+        "uploaded_now": len(uploaded_now),
+        "failed": len(failed),
+        "resume_state_file": str(state_path),
+    }
+
+
 def build_and_upload_index(
     api: HfApi,
     project_slug: str,
@@ -324,6 +484,15 @@ def build_parser() -> argparse.ArgumentParser:
     build_index.add_argument("--detections-file", required=True)
     build_index.add_argument("--shard-size", type=int, default=10000)
 
+    sync_audio = sub.add_parser("sync-audio", help="Upload local audio files in resumable batches")
+    sync_audio.add_argument("--project-slug", required=True)
+    sync_audio.add_argument("--dataset-repo", required=True)
+    sync_audio.add_argument("--local-audio-dir", required=True)
+    sync_audio.add_argument("--batch-size", type=int, default=100)
+    sync_audio.add_argument("--max-retries", type=int, default=3)
+    sync_audio.add_argument("--retry-backoff-seconds", type=float, default=1.0)
+    sync_audio.add_argument("--resume-state-file", default=".sync-audio-state.json")
+
     verify_project = sub.add_parser("verify-project", help="Verify project integrity")
     verify_project.add_argument("--project-slug", required=True)
     verify_project.add_argument("--dataset-repo", required=True)
@@ -356,6 +525,20 @@ def main() -> int:
         )
         print(json.dumps(result, indent=2))
         return 0
+
+    if args.command == "sync-audio":
+        result = sync_audio_batches(
+            api=api,
+            project_slug=args.project_slug,
+            dataset_repo=args.dataset_repo,
+            local_audio_dir=args.local_audio_dir,
+            batch_size=args.batch_size,
+            max_retries=args.max_retries,
+            retry_backoff_seconds=args.retry_backoff_seconds,
+            resume_state_file=args.resume_state_file,
+        )
+        print(json.dumps(result, indent=2))
+        return 0 if result["failed"] == 0 else 1
 
     if args.command == "verify-project":
         result = verify_project(
