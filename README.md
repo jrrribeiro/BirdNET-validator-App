@@ -13,6 +13,26 @@ Aplicacao de validacao de deteccoes para Hugging Face Spaces (Gradio), com foco 
 3. Rodar app:
    python app.py
 
+## CLI de dataset (Sprint 1)
+Comandos principais:
+
+1. Criar estrutura do projeto no dataset Hugging Face:
+   python -m cli.hf_dataset_cli create-project --project-slug ppbio-rabeca --dataset-repo USUARIO/birdnet-ppbio-rabeca-dataset
+
+2. Gerar manifesto e shards iniciais de indice:
+   python -m cli.hf_dataset_cli build-index --project-slug ppbio-rabeca --dataset-repo USUARIO/birdnet-ppbio-rabeca-dataset --detections-file detections.csv --shard-size 10000
+
+3. Verificar consistencia basica do projeto:
+   python -m cli.hf_dataset_cli verify-project --project-slug ppbio-rabeca --dataset-repo USUARIO/birdnet-ppbio-rabeca-dataset
+
+Estrutura base criada por projeto/dataset:
+- audio/
+- index/
+- index/shards/
+- validations/
+- audit/
+- manifest.json
+
 ## Estrutura
 - src/domain: modelos de dominio
 - src/repositories: contratos de persistencia
