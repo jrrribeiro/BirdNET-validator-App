@@ -1,0 +1,9 @@
+[project]
+name = "BirdNET-validator-App"
+version = "0.1.0"
+description = "BirdNET detection validator for Hugging Face Spaces"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
