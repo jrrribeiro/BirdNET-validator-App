@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -38,6 +39,16 @@ REQUIRED_DETECTIONS_COLUMNS = (
     "end_time",
 )
 SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+REQUIRED_BIRDNET_COLUMNS = (
+    "source_file",
+    "scientific_name",
+    "confidence",
+    "start_time",
+    "end_time",
+)
+SEGMENT_FILENAME_PATTERN = re.compile(
+    r"^(?P<source_stem>.+)_(?P<start>\d+(?:\.\d+)?)-(?P<end>\d+(?:\.\d+)?)s_(?P<confidence_pct>\d+)%$"
+)
 
 
 @dataclass(slots=True)
@@ -46,6 +57,17 @@ class ShardMetadata:
     rows: int
     sha256: str
     size_bytes: int
+
+
+@dataclass(slots=True)
+class SegmentFileRecord:
+    scientific_name: str
+    source_stem: str
+    start_time: float
+    end_time: float
+    confidence_pct: int
+    absolute_path: Path
+    relative_path: str
 
 
 def _utcnow_iso() -> str:
@@ -140,6 +162,188 @@ def load_detections_table(detections_file: str) -> pd.DataFrame:
 
     deduped = frame.drop_duplicates(subset=["detection_key"], keep="last")
     return deduped.sort_values(by=["detection_key"]).reset_index(drop=True)
+
+
+def load_birdnet_detections_csv(detections_csv: str) -> pd.DataFrame:
+    input_path = Path(detections_csv)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Detections CSV not found: {detections_csv}")
+
+    frame = pd.read_csv(input_path)
+    missing_columns = [col for col in REQUIRED_BIRDNET_COLUMNS if col not in frame.columns]
+    if missing_columns:
+        raise ValueError(f"Missing required BirdNET columns: {', '.join(missing_columns)}")
+
+    if frame.empty:
+        return frame
+
+    normalized = frame.copy()
+    normalized["source_file"] = normalized["source_file"].astype(str).str.strip()
+    normalized["source_stem"] = normalized["source_file"].apply(lambda value: Path(value).stem)
+    normalized["scientific_name"] = normalized["scientific_name"].astype(str).str.strip()
+    normalized["species_key"] = normalized["scientific_name"].str.casefold()
+    normalized["start_time"] = pd.to_numeric(normalized["start_time"], errors="coerce")
+    normalized["end_time"] = pd.to_numeric(normalized["end_time"], errors="coerce")
+    normalized["confidence"] = pd.to_numeric(normalized["confidence"], errors="coerce")
+
+    normalized = normalized.dropna(subset=["start_time", "end_time"]).reset_index(drop=True)
+    return normalized
+
+
+def _build_detection_key(project_slug: str, source_file: str, scientific_name: str, start_time: float, end_time: float) -> str:
+    payload = f"{project_slug}|{source_file}|{scientific_name}|{start_time:.3f}|{end_time:.3f}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def parse_segment_filename(file_name: str) -> tuple[str, float, float, int] | None:
+    stem = Path(file_name).stem
+    match = SEGMENT_FILENAME_PATTERN.match(stem)
+    if not match:
+        return None
+
+    source_stem = match.group("source_stem")
+    start_time = float(match.group("start"))
+    end_time = float(match.group("end"))
+    confidence_pct = int(match.group("confidence_pct"))
+    return source_stem, start_time, end_time, confidence_pct
+
+
+def discover_segment_records(segments_root: str) -> list[SegmentFileRecord]:
+    root = Path(segments_root)
+    if not root.exists() or not root.is_dir():
+        raise FileNotFoundError(f"Segments root not found: {segments_root}")
+
+    records: list[SegmentFileRecord] = []
+    for absolute_path in root.rglob("*"):
+        if not absolute_path.is_file():
+            continue
+        if absolute_path.suffix.lower() != ".wav":
+            continue
+
+        rel = absolute_path.relative_to(root)
+        scientific_name = rel.parts[0] if rel.parts else ""
+        parsed = parse_segment_filename(absolute_path.name)
+        if not parsed:
+            continue
+        source_stem, start_time, end_time, confidence_pct = parsed
+        records.append(
+            SegmentFileRecord(
+                scientific_name=scientific_name,
+                source_stem=source_stem,
+                start_time=start_time,
+                end_time=end_time,
+                confidence_pct=confidence_pct,
+                absolute_path=absolute_path,
+                relative_path=rel.as_posix(),
+            )
+        )
+
+    return records
+
+
+def run_ingest_segments_dry_run(project_slug: str, detections_csv: str, segments_root: str) -> dict[str, Any]:
+    frame = load_birdnet_detections_csv(detections_csv=detections_csv)
+    segment_records = discover_segment_records(segments_root=segments_root)
+
+    by_species: dict[str, list[SegmentFileRecord]] = {}
+    for record in segment_records:
+        by_species.setdefault(record.scientific_name.casefold(), []).append(record)
+
+    matched_rows: list[dict[str, Any]] = []
+    unmatched_rows: list[dict[str, Any]] = []
+    ambiguous_rows: list[dict[str, Any]] = []
+
+    for row in frame.to_dict(orient="records"):
+        species_key = str(row.get("species_key", "")).casefold()
+        source_stem = str(row.get("source_stem", "")).strip()
+        start_time = float(row["start_time"])
+        end_time = float(row["end_time"])
+        confidence = float(row["confidence"]) if pd.notna(row.get("confidence")) else 0.0
+
+        species_candidates = by_species.get(species_key, [])
+        exact_matches = [
+            record
+            for record in species_candidates
+            if record.source_stem == source_stem
+            and abs(record.start_time - start_time) < 1e-6
+            and abs(record.end_time - end_time) < 1e-6
+        ]
+
+        if not exact_matches:
+            unmatched_rows.append(
+                {
+                    "source_file": row.get("source_file", ""),
+                    "scientific_name": row.get("scientific_name", ""),
+                    "start_time": start_time,
+                    "end_time": end_time,
+                }
+            )
+            continue
+
+        selected = exact_matches[0]
+        if len(exact_matches) > 1:
+            expected_pct = int(round(confidence * 100))
+            exact_matches = sorted(exact_matches, key=lambda item: abs(item.confidence_pct - expected_pct))
+            selected = exact_matches[0]
+            ambiguous_rows.append(
+                {
+                    "source_file": row.get("source_file", ""),
+                    "scientific_name": row.get("scientific_name", ""),
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "candidates": len(exact_matches),
+                }
+            )
+
+        matched_rows.append(
+            {
+                "project_slug": project_slug,
+                "detection_key": _build_detection_key(
+                    project_slug=project_slug,
+                    source_file=str(row.get("source_file", "")),
+                    scientific_name=str(row.get("scientific_name", "")),
+                    start_time=start_time,
+                    end_time=end_time,
+                ),
+                "audio_id": source_stem,
+                "segment_filename": selected.absolute_path.name,
+                "segment_relpath": selected.relative_path,
+                "scientific_name": row.get("scientific_name", ""),
+                "common_name": row.get("common_name", ""),
+                "confidence": confidence,
+                "start_time": start_time,
+                "end_time": end_time,
+                "exact_start": row.get("exact_start", start_time),
+                "exact_end": row.get("exact_end", end_time),
+                "locality": row.get("locality", ""),
+                "point": row.get("point", ""),
+                "date_folder": row.get("date_folder", ""),
+                "min_freq": row.get("min_freq", None),
+                "max_freq": row.get("max_freq", None),
+                "box_source": row.get("box_source", ""),
+                "label": row.get("label", ""),
+                "source_file": row.get("source_file", ""),
+                "schema_version": SCHEMA_VERSION,
+                "ingested_at": _utcnow_iso(),
+            }
+        )
+
+    unique_audio = {row["audio_id"] for row in matched_rows}
+    result = {
+        "mode": "dry-run",
+        "project_slug": project_slug,
+        "detections_csv": detections_csv,
+        "segments_root": segments_root,
+        "csv_rows_total": int(len(frame)),
+        "segments_found_total": len(segment_records),
+        "matched_rows": len(matched_rows),
+        "unmatched_rows": len(unmatched_rows),
+        "ambiguous_rows": len(ambiguous_rows),
+        "unique_audio_ids": len(unique_audio),
+        "sample_unmatched": unmatched_rows[:20],
+        "sample_ambiguous": ambiguous_rows[:20],
+    }
+    return result
 
 
 def _file_sha256(file_path: Path) -> str:
@@ -497,6 +701,14 @@ def build_parser() -> argparse.ArgumentParser:
     verify_project.add_argument("--project-slug", required=True)
     verify_project.add_argument("--dataset-repo", required=True)
 
+    ingest_segments = sub.add_parser("ingest-segments", help="Match BirdNET CSV rows with segment files")
+    ingest_segments.add_argument("--project-slug", required=True)
+    ingest_segments.add_argument("--dataset-repo", required=True)
+    ingest_segments.add_argument("--detections-csv", required=True)
+    ingest_segments.add_argument("--segments-root", required=True)
+    ingest_segments.add_argument("--dry-run", action="store_true")
+    ingest_segments.add_argument("--report-file", default="")
+
     return parser
 
 
@@ -548,6 +760,22 @@ def main() -> int:
         )
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else 1
+
+    if args.command == "ingest-segments":
+        if not args.dry_run:
+            parser.error("ingest-segments currently supports only --dry-run in this phase")
+
+        result = run_ingest_segments_dry_run(
+            project_slug=args.project_slug,
+            detections_csv=args.detections_csv,
+            segments_root=args.segments_root,
+        )
+
+        if args.report_file:
+            Path(args.report_file).write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+        print(json.dumps(result, indent=2))
+        return 0
 
     parser.error("Unknown command")
     return 2
