@@ -17,7 +17,7 @@ def create_login_page(auth_service: AuthService) -> Tuple[gr.Blocks, gr.Textbox,
         Tuple of (login_block, username_input, session_output, login_button, error_message)
     """
 
-    with gr.Blocks(title="BirdNET Validator - Login") as login_block:
+    with gr.Blocks(title="BirdNET-Validator-App - Login") as login_block:
         gr.Markdown("# BirdNET Validation Platform")
         gr.Markdown("Login to access multi-project validation workflows")
 

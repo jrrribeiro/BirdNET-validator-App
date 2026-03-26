@@ -684,8 +684,8 @@ def build_demo_app(project_slug: str = "demo-project") -> gr.Blocks:
     validation_repository = AppendOnlyValidationRepository(base_dir=validation_base_dir)
     validation_service = ValidationService(validation_repository)
 
-    with gr.Blocks(title="BirdNET Validator HF") as demo:
-        gr.Markdown("# BirdNET Validator HF")
+    with gr.Blocks(title="BirdNET-Validator-App") as demo:
+        gr.Markdown("# BirdNET-Validator-App")
         gr.Markdown("Sprint 2: fila paginada + audio sob demanda com cache efemero.")
 
         dataset_repo = gr.Textbox(label="Dataset repo", value="SEU_USUARIO/birdnet-projeto-dataset")
@@ -1249,8 +1249,8 @@ def create_app() -> gr.Blocks:
         )
     )
 
-    with gr.Blocks(title="BirdNET Validator HF - Multi-Project") as wrapper:
-        gr.Markdown("# BirdNET Validator HF - Sprint 4: Segurança Multi-Projeto")
+    with gr.Blocks(title="BirdNET-Validator-App - Multi-Project") as wrapper:
+        gr.Markdown("# BirdNET-Validator-App - Sprint 4: Segurança Multi-Projeto")
         gr.Markdown("**Versão com autenticação, autorização por projeto, e painel admin**")
 
         # Session state

@@ -1,7 +1,7 @@
 [project]
 name = "BirdNET-Validator-App"
 version = "0.1.0"
-description = "BirdNET detection validator for Hugging Face Spaces"
+description = "BirdNET-Validator-App for multi-project bird detection review workflows"
 readme = "README.md"
 requires-python = ">=3.11"
 
